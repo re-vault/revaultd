@@ -33,7 +33,7 @@ use revault_tx::{
         Address, Amount, OutPoint, PublicKey as BitcoinPubKey, SigHashType,
         Transaction as BitcoinTransaction, Txid,
     },
-    miniscript::descriptor::DescriptorPublicKey,
+    miniscript::{descriptor::DescriptorPublicKey, DescriptorTrait},
     transactions::{
         CancelTransaction, EmergencyTransaction, RevaultTransaction, SpendTransaction,
         UnvaultEmergencyTransaction, UnvaultTransaction,
@@ -818,6 +818,36 @@ pub fn fetch_cosigs_signatures(
     }
 
     Ok(())
+}
+
+/// This function estimates (conservatively) the size of the message
+/// for sending the fully-signed tx to the coordinator, returning
+/// if the size is smaller than NOISE_PLAINTEXT_MAX_SIZE
+pub fn check_spend_transaction_size(
+    revaultd: &RevaultD,
+    spend_tx: SpendTransaction,
+    n_deposit_outpoints: usize,
+) -> bool {
+    // Very rough estimate of the SetSpendTx message size
+    // Each deposit takes ~70 bytes (64 for txid + ":" + 1 for vout + some room for other chars
+    // such as commas)
+    // The remaining parameters take approximately 100 bytes
+    let overhead = n_deposit_outpoints * 70 + 100;
+    let tx_finalized = spend_tx.is_finalized();
+    let tx = spend_tx.into_psbt().extract_tx();
+    let mut final_tx_size = tx.get_size();
+
+    if !tx_finalized {
+        let max_satisfaction_weight = revaultd
+            .unvault_descriptor
+            .inner()
+            .max_satisfaction_weight()
+            .expect("Script must be satisfiable");
+        final_tx_size += max_satisfaction_weight * n_deposit_outpoints;
+    }
+
+    // We multiply final_tx_size by 2 as we're sending it in hex
+    return 2 * final_tx_size + overhead <= revault_net::noise::NOISE_PLAINTEXT_MAX_SIZE;
 }
 
 /// Sends the spend transaction for a certain outpoint to the coordinator
